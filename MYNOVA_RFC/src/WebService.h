@@ -11,9 +11,11 @@
 #include <DNSServer.h>
 #include <SPIFFS.h>
 #include <LittleFS.h>
+#include <Update.h>
 
 #include "WiFiManager.h"
 #include "DataStore.h"
+#include "RemoteOTA.h"
 
 class WebService
 {
@@ -47,10 +49,24 @@ public:
     void handleMQTTConfigClearRequest(AsyncWebServerRequest *request);
     void handleMQTTConnectRequest(AsyncWebServerRequest *request);
     void handleMQTTStatusRequest(AsyncWebServerRequest *request);
-    
+
+    // OTA 网页上传接口（本地手动刷机）
+    void handleOTAUploadComplete(AsyncWebServerRequest *request);
+    void handleOTAUploadData(AsyncWebServerRequest *request, const String& filename,
+                            size_t index, uint8_t *data, size_t len, bool final);
+    // OTA 状态 / 远程检查 / 令牌管理 / 升级页
+    void handleOTAStatusRequest(AsyncWebServerRequest *request);
+    void handleOTACheckRequest(AsyncWebServerRequest *request);
+    void handleOTASetTokenRequest(AsyncWebServerRequest *request);
+    void handleOTAUpdateForm(AsyncWebServerRequest *request);
+    bool checkOTAToken(AsyncWebServerRequest *request);
+
 private:
     AsyncWebServer server;
     WiFiManager *pWiFiManager;
+
+    String otaToken;          // OTA 访问令牌（存于 Preferences，默认 mynova-admin）
+    bool otaAborted = false;  // 本次上传已因鉴权/写入失败而中止
 };
 
 #endif

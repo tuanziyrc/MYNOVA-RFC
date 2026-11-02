@@ -13,8 +13,9 @@
 extern UIEngine uiEngine;
 extern WiFiManager wifiManager; // 假设有全局实例
 
-// 替换为你的域名 Please replace with your domain
-#define UPDATE_JSON_URL "https://mydomain.com/rfc/update.json" 
+// 本地 OTA 服务器地址：运行 OTA_Tools/ota_server.py 的电脑的“局域网 IP”
+// 注意：必须是设备同一网段能访问到的 IP，不是 192.168.1.100 就改成你电脑的实际 IP
+#define UPDATE_JSON_URL "https://192.168.1.100:8000/update.json"
 
 // 版本比较辅助函数
 // 返回 1: v1 > v2

@@ -20,6 +20,13 @@
 #include "src/DataStore.h"
 #include "src/SplashScreen.h"
 #include "src/HAManager.h"
+#include "src/RemoteOTA.h"
+
+// 远程 OTA 版本检查地址（留空则禁用自动检查，只能手动 /api/ota/check 触发）
+// 例: "http://192.168.1.100:8000/version.json"
+#ifndef REMOTE_OTA_VERSION_URL
+#define REMOTE_OTA_VERSION_URL ""
+#endif
 
 DataStore dataStore;
 GUIRender guiRender;
@@ -31,6 +38,7 @@ WebService webService;
 WiFiManager wifiManager;
 SplashScreen splashScreen;
 HAManager haManager;
+RemoteOTA remoteOTA;
 extern HomePage uiPageHome;
 
 void setup()
@@ -69,6 +77,7 @@ void setup()
     splashScreen.setProgress(55, "Web Service");
     webService.init(&wifiManager);
     webService.serverStart();
+    remoteOTA.begin(REMOTE_OTA_VERSION_URL);   // 初始化远程 OTA 检查（地址为空则仅手动触发）
     delay(50);
     
     // 初始化按钮处理 (70%)
@@ -110,6 +119,10 @@ void loop()
   
   // 处理Home Assistant MQTT消息
   haManager.loop();
+  
+  // 远程 OTA 周期检查与待重启处理（地址为空时不自动检查）
+  remoteOTA.update();
+  remoteOTA.loopEnd();
   
   delay(10);
 }

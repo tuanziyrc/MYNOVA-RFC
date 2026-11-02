@@ -163,7 +163,7 @@ void SystemSetting::enterSleep() {
     
     if (rtc_gpio_count > 0) {
         // 配置ext1唤醒：任意一个按键按下（0=低电平）即唤醒
-        esp_sleep_enable_ext1_wakeup_io(wakeup_pin_mask, ESP_EXT1_WAKEUP_ALL_LOW);
+        esp_sleep_enable_ext1_wakeup(wakeup_pin_mask, ESP_EXT1_WAKEUP_ANY_LOW);
         Serial.print("SystemSetting: 已配置"); 
         Serial.print(rtc_gpio_count); 
         Serial.println("个RTC按键作为唤醒源");

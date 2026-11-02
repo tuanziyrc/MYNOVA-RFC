@@ -180,7 +180,7 @@ bool HAManager::discoverMQTTServer(String& server, uint16_t& port) {
     if (n > 0) {
         Serial.printf("  ✓ 找到 %d 个MQTT服务\n", n);
         // ESP32 mDNS API: 使用 address() 或 IP()
-        IPAddress ip = MDNS.address(0);
+        IPAddress ip = MDNS.IP(0);
         if (ip != IPAddress(0, 0, 0, 0)) {
             server = ip.toString();
             port = MDNS.port(0);
@@ -213,7 +213,7 @@ bool HAManager::discoverMQTTServer(String& server, uint16_t& port) {
             // 检查是否是Home Assistant
             if (hostname.indexOf("homeassistant") >= 0 || 
                 hostname.indexOf("hassio") >= 0) {
-                IPAddress ip = MDNS.address(i);
+                IPAddress ip = MDNS.IP(i);
                 if (ip != IPAddress(0, 0, 0, 0)) {
                     server = ip.toString();
                     port = 1883;  // 假设MQTT在同一主机的1883端口

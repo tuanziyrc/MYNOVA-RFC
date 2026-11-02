@@ -10,9 +10,17 @@
 #include "GUI/UIEngine.h"
 #include "ButtonDetector.h"
 #include "SystemSetting.h"
+#include "Buzzer.h"
 
 extern UIEngine uiEngine;
 extern SystemSetting systemSetting;
+// 复用 RadioHelper.cpp 中的全局蜂鸣器实例（无源蜂鸣器驱动）
+extern Buzzer buzzer;
+
+// 按键反馈音时长（ms）：短促“咔哒”声，作为按键触感提示。
+// 该提示音走 Buzzer::beep()，内部已按 systemSetting.getBuzzerEnable() 拦截，
+// 因此“一键开关蜂鸣器”(SoundPage::toggleSound) 的开关逻辑不受影响。
+#define KEY_PRESS_BEEP_MS  40
 
 // 全局ButtonHandle实例指针
 ButtonHandle* g_buttonHandle = nullptr;
@@ -271,7 +279,11 @@ void ButtonHandle::buttonExecuteTask(void* pvParameters)
         if (g_buttonHandle && xQueueReceive(g_buttonHandle->buttonEventQueue, &event, portMAX_DELAY) == pdPASS) {
             // 任何按键按下都重置空闲计时器
             systemSetting.resetIdleTimer();
-            
+
+            // 按键反馈音：覆盖所有按键（BACK/MENU/ENTER/1~9）与所有页面。
+            // 关蜂鸣器时 Buzzer::beep() 内部直接返回，故“一键开关”逻辑不受影响。
+            buzzer.beep(KEY_PRESS_BEEP_MS);
+
             UIPage* currentPage = uiEngine.getCurrentPage();
             if (currentPage) {
                 switch (event) {

@@ -65,6 +65,10 @@ static MQTTMode stringToMQTTMode(const String& mode) {
 #define MQTT_KEY_USERNAME "username"
 #define MQTT_KEY_PASSWORD "password"
 
+// OTA 令牌专用命名空间
+#define OTA_NAMESPACE "ota"
+#define OTA_KEY_TOKEN "token"
+
 DataStore::DataStore()
 {
     // 创建互斥锁，并检查是否创建成功
@@ -687,4 +691,44 @@ bool DataStore::HasMQTTConfig()
     String password;
     
     return LoadMQTTConfig(mode, server, port, username, password);
+}
+
+// ==================== OTA 令牌相关 ====================
+
+bool DataStore::SaveOTAToken(const String& token)
+{
+    if (preferencesMutex == nullptr) return false;
+    if (xSemaphoreTake(preferencesMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        bool success = preferences.begin(OTA_NAMESPACE, false);
+        if (!success) {
+            xSemaphoreGive(preferencesMutex);
+            return false;
+        }
+        preferences.putString(OTA_KEY_TOKEN, token);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+        Serial.println("DataStore: OTA 令牌已保存");
+        return true;
+    }
+    Serial.println("DataStore::SaveOTAToken: 获取互斥锁超时");
+    return false;
+}
+
+String DataStore::LoadOTAToken()
+{
+    String token = "";
+    if (preferencesMutex == nullptr) return token;
+    if (xSemaphoreTake(preferencesMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        bool success = preferences.begin(OTA_NAMESPACE, true);
+        if (!success) {
+            xSemaphoreGive(preferencesMutex);
+            return token;
+        }
+        token = preferences.getString(OTA_KEY_TOKEN, "");
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    } else {
+        Serial.println("DataStore::LoadOTAToken: 获取互斥锁超时");
+    }
+    return token;
 }

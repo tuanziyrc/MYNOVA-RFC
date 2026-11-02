@@ -6,15 +6,18 @@
 
 #include "WebService.h"
 #include <ArduinoJson.h>
+#include <esp_ota_ops.h>
 #include "DataStore.h"
 #include "SystemSetting.h"
 #include "RadioHelper.h"
 #include "HAManager.h"
+#include "ota_page.h"
 
 extern DataStore dataStore;
 extern SystemSetting systemSetting;
 extern RadioHelper radioHelper;
 extern HAManager haManager;
+extern RemoteOTA remoteOTA;
 void handleRequest(AsyncWebServerRequest *request){}
 void handleUploadRequest(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final){}
 
@@ -26,51 +29,74 @@ server(80)
 void WebService::init(WiFiManager *wifiMgr)
 {
     pWiFiManager = wifiMgr;
-    Serial.println("WebService: 创建AsyncWebServer实例");
+    otaToken = dataStore.LoadOTAToken();
+    if (otaToken.isEmpty()) {
+        otaToken = "mynova-admin";   // 默认令牌，建议通过 /api/ota/settoken 修改
+    }
+    Serial.println("WebService: 创建AsyncWebServer实例，OTA Token " + (otaToken.length() ? String("已就绪") : String("未设置")));
 }
 
 void WebService::serverStart()
 {
     Serial.println("WebService: 开始启动Web服务器");
     
-    // 初始化LittleFS文件系统
+    // 初始化LittleFS文件系统（失败不阻断 OTA / API）
     Serial.println("WebService: 挂载LittleFS文件系统");
-    if (!LittleFS.begin(true))
-    {
-        Serial.println("WebService: LittleFS挂载失败");
-        return;
+    bool lfsOk = LittleFS.begin(true);
+    if (!lfsOk) {
+        Serial.println("WebService: LittleFS挂载失败，仅提供 /ota 升级页与 API");
+    } else {
+        Serial.println("WebService: LittleFS挂载成功");
+        // 配置静态文件服务
+        server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
     }
-    Serial.println("WebService: LittleFS挂载成功");
-    
-    // 配置静态文件服务
-    server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
-    
+
+    // ============ OTA 升级相关路由（独立于 LittleFS，必注册） ============
+    // 本地网页上传固件
+    server.on("/api/ota/upload", HTTP_POST,
+        (ArRequestHandlerFunction)std::bind(&WebService::handleOTAUploadComplete, this, std::placeholders::_1),
+        (ArUploadHandlerFunction)std::bind(&WebService::handleOTAUploadData, this, std::placeholders::_1,
+            std::placeholders::_2, std::placeholders::_3, std::placeholders::_4,
+            std::placeholders::_5, std::placeholders::_6));
+    // 远程更新：立即检查并升级（Token 鉴权）
+    server.on("/api/ota/check", HTTP_POST,
+        (ArRequestHandlerFunction)std::bind(&WebService::handleOTACheckRequest, this, std::placeholders::_1));
+    // 修改 OTA Token（需当前 Token）
+    server.on("/api/ota/settoken", HTTP_POST,
+        (ArRequestHandlerFunction)std::bind(&WebService::handleOTASetTokenRequest, this, std::placeholders::_1));
+    // 查询 OTA 状态（版本/运行分区/是否忙）
+    server.on("/api/ota/status", HTTP_GET,
+        (ArRequestHandlerFunction)std::bind(&WebService::handleOTAStatusRequest, this, std::placeholders::_1));
+    // 升级页面（内置 HTML，无需 LittleFS）
+    server.on("/ota", HTTP_GET,
+        (ArRequestHandlerFunction)std::bind(&WebService::handleOTAUpdateForm, this, std::placeholders::_1));
+
     // 注册API路由
     Serial.println("WebService: 注册API路由");
     
     // WIFI相关接口
-    server.on(AsyncURIMatcher("/api/wifiscan"), HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleWIFIScanRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/wifisave"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleWIFISaveRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
-    server.on(AsyncURIMatcher("/api/wificlear"), HTTP_DELETE, (ArRequestHandlerFunction)std::bind(&WebService::handleWIFIClearRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/wificonnect"), HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleWIFIConnectRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/wifienable"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleWIFIEnableRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
-    server.on(AsyncURIMatcher("/api/apwifiinfo"), HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleAPWIFIInfoRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/apsave"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleAPSaveRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
-    server.on(AsyncURIMatcher("/api/apenable"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleAPEnableRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/wifiscan", HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleWIFIScanRequest, this, std::placeholders::_1));
+    server.on("/api/wifisave", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleWIFISaveRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/wificlear", HTTP_DELETE, (ArRequestHandlerFunction)std::bind(&WebService::handleWIFIClearRequest, this, std::placeholders::_1));
+    server.on("/api/wificonnect", HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleWIFIConnectRequest, this, std::placeholders::_1));
+    server.on("/api/wifienable", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleWIFIEnableRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/apwifiinfo", HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleAPWIFIInfoRequest, this, std::placeholders::_1));
+    server.on("/api/apsave", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleAPSaveRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/apenable", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleAPEnableRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
     
     // 无线遥控数据管理接口
-    server.on(AsyncURIMatcher("/api/radiodata/list"), HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleRadioDataListRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/radiodata/add"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataAddRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
-    server.on(AsyncURIMatcher("/api/radiodata/update"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataUpdateRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
-    server.on(AsyncURIMatcher("/api/radiodata/delete"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataDeleteRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
-    server.on(AsyncURIMatcher("/api/radiodata/send"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataSendRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/radiodata/list", HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleRadioDataListRequest, this, std::placeholders::_1));
+    server.on("/api/radiodata/add", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataAddRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/radiodata/update", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataUpdateRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/radiodata/delete", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataDeleteRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/radiodata/send", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleRadioDataSendRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
     
     // MQTT/HA配置接口
-    server.on(AsyncURIMatcher("/api/mqtt/config"), HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTConfigGetRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/mqtt/config"), HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleMQTTConfigSaveRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
-    server.on(AsyncURIMatcher("/api/mqtt/config"), HTTP_DELETE, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTConfigClearRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/mqtt/connect"), HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTConnectRequest, this, std::placeholders::_1));
-    server.on(AsyncURIMatcher("/api/mqtt/status"), HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTStatusRequest, this, std::placeholders::_1));
+    server.on("/api/mqtt/config", HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTConfigGetRequest, this, std::placeholders::_1));
+    server.on("/api/mqtt/config", HTTP_POST, handleRequest, handleUploadRequest, (ArBodyHandlerFunction)std::bind(&WebService::handleMQTTConfigSaveRequest, this, std::placeholders::_1,std::placeholders::_2,std::placeholders::_3,std::placeholders::_4,std::placeholders::_5));
+    server.on("/api/mqtt/config", HTTP_DELETE, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTConfigClearRequest, this, std::placeholders::_1));
+    server.on("/api/mqtt/connect", HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTConnectRequest, this, std::placeholders::_1));
+    server.on("/api/mqtt/status", HTTP_GET, (ArRequestHandlerFunction)std::bind(&WebService::handleMQTTStatusRequest, this, std::placeholders::_1));
     
     Serial.println("WebService: 启动HTTP服务器");
     server.begin();
@@ -79,6 +105,123 @@ void WebService::serverStart()
 
 void WebService::processRequest()
 {
+}
+
+// ==================== OTA 相关实现 ====================
+
+bool WebService::checkOTAToken(AsyncWebServerRequest *request)
+{
+    String t = "";
+    if (request->hasParam("token")) t = request->getParam("token")->value();   // token 在 URL 查询串
+    if (t.isEmpty() && request->hasHeader("X-OTA-Token")) {
+        t = request->getHeader("X-OTA-Token")->value();                       // 或放在请求头
+    }
+    return t == otaToken;
+}
+
+void WebService::handleOTAUploadData(AsyncWebServerRequest *request, const String& filename,
+                                     size_t index, uint8_t *data, size_t len, bool final)
+{
+    if (otaAborted) return;                 // 本次上传已中止
+
+    if (index == 0) {
+        otaAborted = false;
+        OTA_busy = false;
+        if (!checkOTAToken(request)) {      // 第一片先做鉴权
+            otaAborted = true;
+            request->send(401, "application/json", "{\"success\":false,\"msg\":\"Token 无效\"}");
+            return;
+        }
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+            otaAborted = true;
+            Update.printError(Serial);
+            request->send(500, "application/json", "{\"success\":false,\"msg\":\"Update.begin 失败(空间不足?)\"}");
+            return;
+        }
+        OTA_busy = true;
+        Serial.println("OTA upload start: " + filename);
+    }
+
+    if (len > 0) {
+        if (Update.write(data, len) != len) {   // 必须校验写入字节数，防止静默丢数据变砖
+            otaAborted = true;
+            OTA_busy = false;
+            Update.printError(Serial);
+            request->send(500, "application/json", "{\"success\":false,\"msg\":\"固件写入不完整\"}");
+            return;
+        }
+    }
+}
+
+void WebService::handleOTAUploadComplete(AsyncWebServerRequest *request)
+{
+    if (otaAborted) {                    // 上传过程中已回复过错误
+        otaAborted = false;
+        return;
+    }
+    if (Update.isRunning() && Update.end(true)) {
+        OTA_busy = false;
+        request->send(200, "application/json", "{\"success\":true,\"msg\":\"固件已写入，设备即将重启\"}");
+        delay(1000);
+        ESP.restart();
+    } else {
+        OTA_busy = false;
+        Update.printError(Serial);
+        request->send(500, "application/json", "{\"success\":false,\"msg\":\"固件校验失败或未收到数据\"}");
+    }
+}
+
+void WebService::handleOTAStatusRequest(AsyncWebServerRequest *request)
+{
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    JsonDocument doc;
+    doc["version"] = FIRMWARE_VERSION;
+    doc["running"] = running ? String(running->label) : String("?");
+    doc["busy"]    = (bool)OTA_busy;
+    doc["hasToken"]= otaToken.length() > 0;
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebService::handleOTACheckRequest(AsyncWebServerRequest *request)
+{
+    if (!checkOTAToken(request)) {
+        request->send(401, "application/json", "{\"success\":false,\"msg\":\"Token 无效\"}");
+        return;
+    }
+    bool ok = remoteOTA.checkNow();
+    JsonDocument doc;
+    doc["success"] = ok;
+    doc["msg"] = ok ? "发现新版本，开始升级，设备将重启" : String(remoteOTA.lastError());
+    String out;
+    serializeJson(doc, out);
+    request->send(ok ? 200 : 400, "application/json", out);
+}
+
+void WebService::handleOTASetTokenRequest(AsyncWebServerRequest *request)
+{
+    if (!checkOTAToken(request)) {
+        request->send(401, "application/json", "{\"success\":false,\"msg\":\"当前 Token 无效\"}");
+        return;
+    }
+    if (!request->hasParam("newtoken")) {
+        request->send(400, "application/json", "{\"success\":false,\"msg\":\"缺少 newtoken 参数\"}");
+        return;
+    }
+    String nt = request->getParam("newtoken")->value();
+    if (nt.length() < 4) {
+        request->send(400, "application/json", "{\"success\":false,\"msg\":\"Token 至少 4 位\"}");
+        return;
+    }
+    otaToken = nt;
+    dataStore.SaveOTAToken(otaToken);
+    request->send(200, "application/json", "{\"success\":true,\"msg\":\"Token 已更新\"}");
+}
+
+void WebService::handleOTAUpdateForm(AsyncWebServerRequest *request)
+{
+    request->send_P(200, "text/html", OTA_PAGE_HTML);
 }
 
 void WebService::handleWIFIScanRequest(AsyncWebServerRequest *request)

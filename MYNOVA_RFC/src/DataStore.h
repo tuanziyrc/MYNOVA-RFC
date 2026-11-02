@@ -77,6 +77,10 @@ public:
     bool LoadMQTTConfig(MQTTMode& mode, String& server, uint16_t& port, String& username, String& password);
     void ClearMQTTConfig();
     bool HasMQTTConfig();
+
+    // OTA 访问令牌（用于网页/远程升级鉴权）
+    bool SaveOTAToken(const String& token);
+    String LoadOTAToken();
 public:
     int buzzerEnable = 1;
     
